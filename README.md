@@ -50,3 +50,7 @@ npm run dev
 - `src/merge.test.ts`: 공백·줄바꿈·추가·삭제·중복·영어 보존 및 반복 편집 검증
 
 Vite + TypeScript, `diff`(Myers 비교), Vitest를 사용합니다.
+
+## 외부 라이브러리 고지
+
+배포 산출물에 포함되는 `diff`와 Vite 런타임의 저작권·라이선스 고지는 [THIRD_PARTY_NOTICES.txt](public/THIRD_PARTY_NOTICES.txt)에 보존하며, 빌드 시 사이트 루트에도 복사됩니다. 예제와 테스트 문서는 직접 만든 더미 텍스트입니다.
