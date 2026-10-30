@@ -1,4 +1,5 @@
 import { diffArrays } from 'diff';
+import type { DraftSnapshot, ManualMark } from './draft';
 
 export type LineKind = 'unchanged' | 'changed' | 'added' | 'deleted';
 export interface ExtractedLine { text: string; sourceIndex: number }
@@ -11,6 +12,7 @@ export interface MergeRow {
   resultNumber?: number;
   correctedNumber?: number;
   kind: LineKind;
+  manual?: ManualMark;
 }
 export interface MergeResult {
   text: string;
@@ -183,4 +185,134 @@ export function mergeKorean(source: string, corrected: string): MergeResult {
   const noChanges = counts.changed + counts.added + counts.deleted === 0;
   const eol = source.includes('\r\n') ? '\r\n' : source.includes('\r') ? '\r' : '\n';
   return { rows, counts, text: noChanges ? source : output.join(eol) + (output.length && next.trailing ? eol : '') };
+}
+
+/** Compare the final draft without running automatic translation placement again.
+ * All three columns retain their own document order, including moved duplicates.
+ */
+export function compareFinalResult(source: string, automatic: MergeResult, draft: DraftSnapshot, serialized: string): MergeResult {
+  const original = splitText(source).lines;
+  const final = splitText(draft.text).lines;
+  const autoByOutput = new Map<number, MergeRow>();
+  const autoByOriginal = new Map<number, MergeRow>();
+  const corrected = new Map<number, string>();
+  for (const row of automatic.rows) {
+    if (row.resultNumber !== undefined) autoByOutput.set(row.resultNumber - 1, row);
+    if (row.originalNumber !== undefined) autoByOriginal.set(row.originalNumber - 1, row);
+    if (row.correctedNumber !== undefined) corrected.set(row.correctedNumber - 1, row.corrected!);
+  }
+  const leftAt = new Map<number, number>();
+  const leftBefore = new Map<number, number[]>();
+  const addGap = (gaps: Map<number, number[]>, at: number, line: number) => {
+    const group = gaps.get(at) ?? [];
+    group.push(line);
+    gaps.set(at, group);
+  };
+  const changes: { value: string[]; added?: boolean; removed?: boolean }[] = [];
+  let anchorOld = 0;
+  let anchorFinal = 0;
+  const deadline = Date.now() + 2000;
+  const addSegment = (endOld: number, endFinal: number) => {
+    const part = diffArrays(original.slice(anchorOld, endOld), final.slice(anchorFinal, endFinal), { timeout: Math.max(1, deadline - Date.now()) });
+    if (!part) throw new Error('문서가 커서 비교를 완료하지 못했습니다. 직접 편집과 전체 복사는 계속 사용할 수 있습니다.');
+    changes.push(...part);
+  };
+  // Keep untouched English lines as anchors. A Korean placement correction
+  // should be shown as moving Korean, rather than spuriously moving English.
+  final.forEach((text, at) => {
+    const origin = draft.origins[at];
+    const sourceNumber = origin === undefined ? undefined : autoByOutput.get(origin)?.originalNumber;
+    if (sourceNumber === undefined || sourceNumber - 1 < anchorOld || draft.marks[at]?.moved
+      || isKorean(text) || !/[A-Za-z]/.test(text) || original[sourceNumber - 1] !== text) return;
+    addSegment(sourceNumber - 1, at);
+    changes.push({ value: [text] });
+    anchorOld = sourceNumber;
+    anchorFinal = at + 1;
+  });
+  addSegment(original.length, final.length);
+  let oldIndex = 0;
+  let finalIndex = 0;
+  let c = 0;
+  while (c < changes.length) {
+    const chunk = changes[c];
+    if (!chunk.added && !chunk.removed) {
+      chunk.value.forEach(() => leftAt.set(finalIndex++, oldIndex++));
+      c++;
+      continue;
+    }
+    const removed: string[] = [];
+    const added: string[] = [];
+    while (c < changes.length && (changes[c].added || changes[c].removed)) {
+      const change = changes[c++];
+      (change.removed ? removed : added).push(...change.value);
+    }
+    let gapAt = finalIndex;
+    for (const pair of alignChanged(removed, added)) {
+      if (pair.next !== undefined) {
+        if (pair.old !== undefined) leftAt.set(finalIndex + pair.next, oldIndex + pair.old);
+        gapAt = finalIndex + pair.next + 1;
+      } else if (pair.old !== undefined) addGap(leftBefore, gapAt, oldIndex + pair.old);
+    }
+    oldIndex += removed.length;
+    finalIndex += added.length;
+  }
+
+  const candidates: { at: number; right: number }[] = [];
+  const originAt = new Map<number, number>();
+  const candidateAt = new Map<number, number>();
+  final.forEach((_, at) => {
+    const origin = draft.origins[at];
+    if (origin === undefined) return;
+    originAt.set(origin, at);
+    const number = autoByOutput.get(origin)?.correctedNumber;
+    if (number !== undefined) { candidates.push({ at, right: number - 1 }); candidateAt.set(number - 1, at); }
+  });
+  const rightAt = new Map<number, number>();
+  const rightBefore = new Map<number, number[]>();
+  // Match stable line identities, rather than sentence text, to preserve the
+  // corrected document's order when a final line crosses another translation.
+  const rightChanges = diffArrays([...corrected.keys()].sort((a, b) => a - b), candidates.map(item => item.right), { timeout: 1000 });
+  if (!rightChanges) throw new Error('교정본 비교를 완료하지 못했습니다. 직접 편집한 결과는 보존되어 있습니다.');
+  let cursor = 0;
+  let pending: number[] = [];
+  for (const change of rightChanges) {
+    if (change.removed) pending.push(...change.value);
+    else if (change.added) cursor += change.value.length;
+    else for (const right of change.value) {
+      const at = candidates[cursor++].at;
+      for (const missing of pending) addGap(rightBefore, at, missing);
+      pending = [];
+      rightAt.set(at, right);
+    }
+  }
+  for (const missing of pending) addGap(rightBefore, final.length, missing);
+
+  const rows: MergeRow[] = [];
+  const counts = { changed: 0, added: 0, deleted: 0, preserved: 0 };
+  for (let at = 0; at <= final.length; at++) {
+    const leftGaps = leftBefore.get(at) ?? [];
+    const rightGaps = rightBefore.get(at) ?? [];
+    for (let g = 0; g < Math.max(leftGaps.length, rightGaps.length); g++) {
+      const left = leftGaps[g];
+      const right = rightGaps[g];
+      const autoOrigin = left === undefined ? undefined : autoByOriginal.get(left)?.resultNumber;
+      const movedAt = right === undefined ? (autoOrigin === undefined ? undefined : originAt.get(autoOrigin - 1)) : candidateAt.get(right);
+      const manual = movedAt !== undefined ? draft.marks[movedAt]
+        : (autoOrigin !== undefined || right !== undefined) ? { edited: true } : undefined;
+      rows.push({ original: left === undefined ? undefined : original[left], originalNumber: left === undefined ? undefined : left + 1,
+        corrected: right === undefined ? undefined : corrected.get(right), correctedNumber: right === undefined ? undefined : right + 1,
+        kind: 'deleted', manual });
+      if (left !== undefined) counts.deleted++;
+    }
+    if (at === final.length) break;
+    const left = leftAt.get(at);
+    const right = rightAt.get(at);
+    const kind = left === undefined ? 'added' : original[left] === final[at] ? 'unchanged' : 'changed';
+    if (kind === 'unchanged') counts.preserved++; else counts[kind]++;
+    rows.push({ original: left === undefined ? undefined : original[left], originalNumber: left === undefined ? undefined : left + 1,
+      result: final[at], resultNumber: at + 1,
+      corrected: right === undefined ? undefined : corrected.get(right), correctedNumber: right === undefined ? undefined : right + 1,
+      kind, manual: draft.marks[at] });
+  }
+  return { text: serialized, rows, counts };
 }

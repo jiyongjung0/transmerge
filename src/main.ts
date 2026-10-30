@@ -1,5 +1,6 @@
 import { diffWordsWithSpace } from 'diff';
-import { extractKorean, mergeKorean, type MergeResult, type MergeRow } from './merge';
+import { compareFinalResult, extractKorean, mergeKorean, type MergeResult, type MergeRow } from './merge';
+import { ResultDraft, selectedLines } from './draft';
 import { sample, reviseSample } from './sample';
 import './style.css';
 
@@ -25,6 +26,12 @@ let mergeView = false;
 let dirty = false;
 let selectedChange = -1;
 let toastTimer: ReturnType<typeof setTimeout>;
+let automaticResult: MergeResult | undefined;
+let resultDraft: ResultDraft | undefined;
+let mergedSource = '';
+let editingResult = false;
+let composingResult = false;
+let pendingReplacement: (() => void) | undefined;
 
 $('#app').innerHTML = `
   <header class="topbar"><div class="brand"><span class="brand-symbol">${icon('merge')}</span><span>transmerge<span class="brand-dot">.</span></span></div><div class="header-note">${icon('shield')} 내 브라우저에서 안전하게</div><button id="show-help" class="header-link" type="button" aria-haspopup="dialog" aria-controls="help-dialog">사용 방법 ${icon('chevron')}</button></header>
@@ -42,12 +49,13 @@ $('#app').innerHTML = `
       <div id="merge-panel" role="tabpanel" aria-labelledby="tab-merge" hidden>
         <div class="taskbar"><div><h2>다듬은 문장을, 원래 자리로.</h2><p>원문과 교정본을 비교해 한국어 변경을 반영합니다.</p></div><div class="task-actions"><button id="use-base" class="button secondary">추출본 가져오기</button><button id="merge-button" class="button primary">${icon('merge')} 변경사항 병합 ${icon('arrow')}</button></div></div>
         <div class="merge-status"><div class="legend"><span><i class="legend-dot changed"></i>수정</span><span><i class="legend-dot added"></i>추가</span><span><i class="legend-dot deleted"></i>삭제</span></div><div id="change-nav" class="change-nav" hidden><button id="prev-change" class="small-button" aria-label="이전 변경">↑</button><span id="change-position"></span><button id="next-change" class="small-button" aria-label="다음 변경">↓</button></div><span id="merge-summary">영어 원문은 그대로 보존됩니다</span></div>
+        <div id="result-tools" class="result-tools" hidden><div class="result-tools-group"><span class="result-tools-label">가운데 결과 보정</span><button id="move-result-up" class="tool-button" aria-label="선택한 줄 위로 이동" title="선택한 줄 위로 이동 (Alt + ↑)" disabled>↑ 한 줄</button><button id="move-result-down" class="tool-button" aria-label="선택한 줄 아래로 이동" title="선택한 줄 아래로 이동 (Alt + ↓)" disabled>↓ 한 줄</button><span class="tools-divider"></span><button id="undo-result" class="tool-button" aria-label="결과 편집 실행 취소" title="실행 취소 (⌘ / Ctrl + Z)" disabled>↶ 취소</button><button id="redo-result" class="tool-button" aria-label="결과 편집 다시 실행" title="다시 실행 (⌘ / Ctrl + Shift + Z)" disabled>↷ 다시</button></div><span id="result-selection" class="result-selection">가운데 줄을 클릭하거나 ‘직접 편집’을 누르세요.</span></div>
         <div class="merge-grid">
           <section class="editor-card"><div class="card-header"><div class="card-title"><span class="panel-dot original-dot"></span><h3>영한 혼합 원문</h3></div><button id="edit-original" class="small-button" hidden>${icon('edit')} 편집</button></div><div class="editor-area merge-editor"><textarea id="merge-original" aria-label="병합할 영한 혼합 원문" spellcheck="false" placeholder="영어와 한국어가 섞인 원문을 붙여넣으세요."></textarea><div id="original-diff" class="diff-scroll" role="region" aria-label="원문 변경 비교" tabindex="0" hidden></div></div><div class="card-footer"><span id="merge-source-count">0줄</span><span>ORIGINAL</span></div></section>
-          <section class="editor-card result-card"><div class="card-header"><div class="card-title"><span class="panel-dot korean-dot"></span><h3>병합 결과</h3><span class="pill blue-pill">MERGED</span></div><button id="copy-merge" class="small-button" disabled>${icon('copy')} 전체 복사</button></div><div class="editor-area merge-editor"><div id="result-diff" class="diff-scroll" role="region" aria-label="병합 결과 변경 비교" tabindex="0" hidden></div><div id="merge-empty" class="empty-state"><div class="empty-icon">${icon('merge')}</div><strong>두 문서가 만나는 곳</strong><p>왼쪽 원문과 오른쪽 교정본을 입력한 뒤<br />병합 버튼을 눌러 변경사항을 확인하세요.</p></div></div><div class="card-footer"><span id="merge-result-count">병합 대기 중</span><span class="blue-text">영어 + 교정한 한국어</span></div></section>
+          <section class="editor-card result-card"><div class="card-header"><div class="card-title"><span class="panel-dot korean-dot"></span><h3>병합 결과</h3></div><div class="card-actions"><button id="edit-result" class="small-button blue-text" disabled>${icon('edit')} 직접 편집</button><button id="copy-merge" class="small-button" disabled>${icon('copy')} 전체 복사</button></div></div><div class="editor-area merge-editor"><textarea id="result-editor" aria-label="병합 결과 직접 편집" spellcheck="false" hidden></textarea><div id="result-diff" class="diff-scroll" role="region" aria-label="병합 결과 변경 비교" tabindex="0" hidden></div><div id="merge-empty" class="empty-state"><div class="empty-icon">${icon('merge')}</div><strong>두 문서가 만나는 곳</strong><p>왼쪽 원문과 오른쪽 교정본을 입력한 뒤<br />병합 버튼을 눌러 변경사항을 확인하세요.</p></div></div><div class="card-footer"><span id="merge-result-count">병합 대기 중</span><span id="result-manual-status" class="blue-text">영어 + 교정한 한국어</span></div></section>
           <section class="editor-card"><div class="card-header"><div class="card-title"><span class="panel-dot corrected-dot"></span><h3>교정한 한국어</h3></div><button id="edit-corrected" class="small-button" hidden>${icon('edit')} 편집</button></div><div class="editor-area merge-editor"><textarea id="merge-corrected" aria-label="교정한 한국어 입력" spellcheck="false" placeholder="추출한 한국어를 교정한 뒤 붙여넣으세요.&#10;&#10;줄 추가와 삭제도 반영됩니다."></textarea><div id="corrected-diff" class="diff-scroll" role="region" aria-label="교정본 변경 비교" tabindex="0" hidden></div></div><div class="card-footer"><span id="merge-corrected-count">0줄</span><span>REVISED</span></div></section>
         </div>
-        <div class="workspace-note">${icon('info')}<span>왼쪽에서 추출한 한국어가 비교 기준입니다. 같은 문서에서 나온 교정본을 사용하세요. 삭제 표시 줄은 복사 결과에서 제외됩니다.</span></div>
+        <div class="workspace-note">${icon('info')}<span>가운데 결과는 직접 편집할 수 있습니다. 선택한 줄은 Alt + ↑ / ↓로 이동하고, 비교 보기에서 수동 변경을 확인하세요. 삭제 표시 줄은 복사되지 않습니다.</span></div>
       </div>
     </section>
     <section id="how-it-works" class="how-it-works"><div class="how-heading"><span class="eyebrow">A SIMPLE WORKFLOW</span><h2>세 단계면 충분합니다.</h2></div><div class="workflow-step"><span class="step-number">01</span><div><h3>한국어만 추출</h3><p>영한 혼합 원문을 붙여넣고<br />한국어 작업본을 만드세요.</p></div></div><div class="workflow-step"><span class="step-number">02</span><div><h3>자유롭게 교정</h3><p>추출한 한국어를 다듬고<br />교정본 입력란에 넣으세요.</p></div></div><div class="workflow-step"><span class="step-number">03</span><div><h3>변경 확인 & 복사</h3><p>강조된 변경사항을 확인하고<br />병합한 전체 원문을 복사하세요.</p></div></div></section>
@@ -58,12 +66,13 @@ $('#app').innerHTML = `
     <ol class="help-steps">
       <li><strong>영한 혼합 원문에서 한국어 추출</strong><p>‘한국어 추출’ 탭의 왼쪽에 원문을 붙여넣고 <b>한국어 추출</b>을 누르세요. 오른쪽에 한국어 작업본이 나타납니다.</p></li>
       <li><strong>추출한 한국어 교정</strong><p><b>교정 · 병합으로 이어가기</b>를 누른 뒤 오른쪽 입력란에서 한국어를 다듬으세요. 다른 편집기에서 교정한 내용을 붙여넣어도 됩니다.</p></li>
-      <li><strong>변경사항 병합과 확인</strong><p><b>변경사항 병합</b>을 누르면 가운데에 영어와 교정한 한국어가 함께 나타납니다. 수정·추가·삭제는 색으로 표시되며, ↑ ↓ 버튼으로 변경 위치를 이동할 수 있습니다.</p></li>
-      <li><strong>전체 결과 복사</strong><p>가운데의 <b>전체 복사</b>를 누르세요. 다시 수정하려면 왼쪽 또는 오른쪽의 <b>편집</b>을 누르면 됩니다.</p></li>
+      <li><strong>병합 결과 확인과 수동 보정</strong><p><b>변경사항 병합</b>을 누른 뒤 가운데 줄을 클릭하거나 <b>직접 편집</b>을 누르세요. 선택한 한 줄·여러 줄은 <b>↑ 한 줄 / ↓ 한 줄</b> 또는 <b>Alt + ↑ / ↓</b>로 옮길 수 있습니다. <b>취소 / 다시</b>로 편집과 이동을 되돌릴 수 있습니다.</p></li>
+      <li><strong>변경 비교와 전체 복사</strong><p><b>비교 보기</b>에서 수동 수정·이동 표시를 확인하고 <b>전체 복사</b>를 누르세요. 직접 편집 중에도 최종 내용이 복사됩니다. 자동 병합을 다시 하면 수동 보정을 덮어쓰기 전에 확인합니다.</p></li>
     </ol>
     <div class="help-tip">교정본은 왼쪽 원문에서 추출한 한국어를 기준으로 작성하세요.</div>
     <div class="help-footer"><span><kbd>⌘ / Ctrl</kbd> + <kbd>Enter</kbd>로 현재 작업 실행</span><form method="dialog"><button class="button primary">확인했어요</button></form></div>
   </dialog>
+  <dialog id="replace-result-dialog" class="help-dialog replace-result-dialog" aria-labelledby="replace-title" aria-describedby="replace-description"><h2 id="replace-title">수동 보정한 내용이 있습니다</h2><p id="replace-description"></p><div class="replace-actions"><form method="dialog"><button class="button secondary" value="cancel" autofocus>기존 결과 유지</button><button class="button primary" value="replace">보정 내용을 버리고 계속</button></form></div></dialog>
   <div id="toast" role="status" aria-live="polite" hidden></div>`;
 
 function notify(message: string, error = false) {
@@ -135,12 +144,19 @@ function lineHTML(row: MergeRow, column: 'original' | 'result' | 'corrected', in
   const number = row[`${column}Number`];
   let rendered = content === undefined ? '' : escape(content);
   const deletedGhost = column === 'result' && row.kind === 'deleted';
-  if (deletedGhost) rendered = `<del>${escape(row.original ?? '')}</del>`;
-  if (row.kind === 'changed') rendered = wordDiff(row.original ?? '', row.result ?? '', column === 'original' ? 'old' : 'next');
+  if (deletedGhost) rendered = `<del>${escape(row.original ?? row.corrected ?? '')}</del>`;
+  if (row.kind === 'changed' && content !== undefined) {
+    rendered = column === 'corrected' && row.corrected !== row.result
+      ? wordDiff(row.corrected ?? '', row.result ?? '', 'old')
+      : wordDiff(row.original ?? '', row.result ?? '', column === 'original' ? 'old' : 'next');
+  }
   const active = content !== undefined || deletedGhost;
   const label = { changed: '~', added: '+', deleted: '−', unchanged: '' }[row.kind];
-  return `<div class="diff-line ${active ? row.kind : 'spacer'} ${deletedGhost ? 'ghost' : ''}" data-row="${index}"><span class="line-number" aria-hidden="true">${number ?? ''}</span><span class="line-sign" aria-hidden="true">${active ? label : ''}</span><span class="line-content">${rendered || ' '}</span></div>`;
+  const manual = column === 'result' && (row.manual?.edited || row.manual?.moved);
+  const badge = manual ? `<span class="manual-tag">수동 ${row.manual?.edited && row.manual?.moved ? '수정·이동' : row.manual?.moved ? '이동' : '수정'}</span>` : '';
+  return `<div class="diff-line ${active ? row.kind : 'spacer'} ${deletedGhost ? 'ghost' : ''} ${manual ? 'manually-adjusted' : ''}" data-row="${index}" ${column === 'result' && row.resultNumber !== undefined ? `data-result-line="${row.resultNumber}" title="클릭하여 이 줄 편집"` : ''}><span class="line-number" aria-hidden="true">${number ?? ''}</span><span class="line-sign" aria-hidden="true">${active ? label : ''}</span><span class="line-content">${rendered || ' '}${badge}</span></div>`;
 }
+const changedRows = () => result?.rows.map((row, index) => row.kind !== 'unchanged' || row.manual?.edited || row.manual?.moved ? index : -1).filter(index => index >= 0) ?? [];
 function renderMerge() {
   if (!result) return;
   for (const column of ['original', 'result', 'corrected'] as const) {
@@ -148,20 +164,18 @@ function renderMerge() {
     $(`#${column}-diff`).hidden = false;
   }
   $('#merge-empty').hidden = true;
-  setView(true);
   const { changed, added, deleted } = result.counts;
   $('#merge-summary').innerHTML = changed + added + deleted
     ? `<strong>${changed}줄 수정</strong><span class="summary-divider">/</span>${added}줄 추가<span class="summary-divider">/</span>${deleted}줄 삭제`
     : `${icon('check')} 변경 없음 · 원문과 동일합니다`;
-  $('#merge-result-count').textContent = `${lineCount(result.text).toLocaleString()}줄 · 병합 완료`;
-  $('#change-nav').hidden = changed + added + deleted === 0;
+  $('#change-nav').hidden = !mergeView || editingResult || dirty || changedRows().length === 0;
   selectedChange = -1;
-  $('#change-position').textContent = `변경 ${changed + added + deleted}곳`;
-  disable('#copy-merge', false);
+  $('#change-position').textContent = `비교 ${changedRows().length}곳`;
+  updateDraftControls();
   requestAnimationFrame(alignRowHeights);
 }
 function alignRowHeights() {
-  if (!mergeView || !result || $('#merge-panel').hidden) return;
+  if (!mergeView || !result || editingResult || $('#merge-panel').hidden) return;
   const columns = ['original', 'result', 'corrected'].map(column => Array.from($(`#${column}-diff`).children) as HTMLElement[]);
   columns.forEach(rows => rows.forEach(row => { row.style.minHeight = ''; }));
   const heights = result.rows.map((_, index) => Math.max(...columns.map(rows => rows[index].getBoundingClientRect().height)));
@@ -180,26 +194,123 @@ function setView(show: boolean) {
 function invalidateMerge() {
   if (result) {
     dirty = true;
-    disable('#copy-merge', true);
-    $('#merge-result-count').textContent = '입력 변경됨 · 다시 병합해 주세요';
-    $('#merge-summary').textContent = '입력이 변경되었습니다. 다시 병합해 주세요.';
+    $('#merge-summary').textContent = '입력 변경됨 · 가운데는 이전 입력의 최종본입니다.';
+    $('#change-nav').hidden = true;
   }
+  updateDraftControls();
   updateCounts();
 }
-function runMerge() {
+function executeMerge() {
   const source = value('#merge-original');
   if (!source.trim()) return notify('왼쪽에 영한 혼합 원문을 입력해 주세요.', true);
   // Empty revised text is intentional: it deletes all extracted translation lines.
   try {
-    result = mergeKorean(source, value('#merge-corrected'));
+    const next = mergeKorean(source, value('#merge-corrected'));
+    result = automaticResult = next;
+    resultDraft = new ResultDraft(next.text);
+    mergedSource = source;
+    editingResult = false;
     dirty = false;
+    setView(true);
     renderMerge();
     notify('병합이 완료되었습니다. 강조된 변경사항을 확인하세요.');
   } catch (error) { notify(error instanceof Error ? error.message : '병합 중 오류가 발생했습니다.', true); }
 }
+function protectDraft(action: () => void, description: string) {
+  if (!resultDraft?.hasManualChanges) return action();
+  pendingReplacement = action;
+  $('#replace-description').textContent = description;
+  replaceDialog.returnValue = '';
+  replaceDialog.showModal();
+}
+function runMerge() {
+  protectDraft(executeMerge, '자동 병합을 다시 실행하면 가운데에서 직접 수정하거나 이동한 내용이 새 병합 결과로 바뀝니다. 계속할까요?');
+}
+function updateDraftControls() {
+  $('#result-tools').hidden = !resultDraft;
+  disable('#edit-result', !resultDraft || composingResult);
+  disable('#copy-merge', !resultDraft || composingResult);
+  disable('#undo-result', !resultDraft?.canUndo || composingResult);
+  disable('#redo-result', !resultDraft?.canRedo || composingResult);
+  disable('#move-result-up', !editingResult || composingResult || !resultDraft?.canMove(-1));
+  disable('#move-result-down', !editingResult || composingResult || !resultDraft?.canMove(1));
+  $('#result-editor').hidden = !editingResult;
+  $('#result-diff').hidden = editingResult || !result;
+  $('#edit-result').innerHTML = editingResult ? `${icon('check')} 비교 보기` : `${icon('edit')} 직접 편집`;
+  $('#merge-button').innerHTML = `${icon('merge')} ${resultDraft ? '자동 병합 다시 하기' : '변경사항 병합'} ${icon('arrow')}`;
+  if (!resultDraft) return;
+  const manual = resultDraft.hasManualChanges;
+  $('#merge-result-count').textContent = `${lineCount(resultDraft.text).toLocaleString()}줄 · ${dirty ? '입력 변경됨' : editingResult ? '직접 편집 중' : '병합 완료'}`;
+  $('#result-manual-status').textContent = manual ? '수동 보정한 최종본' : '영어 + 교정한 한국어';
+  $('#result-manual-status').classList.toggle('manual-status', manual);
+  if (editingResult) {
+    const lines = selectedLines(resultDraft.current.text, resultDraft.current.start, resultDraft.current.end);
+    $('#result-selection').textContent = lines.first <= lines.last ? `${lines.first + 1}${lines.last > lines.first ? `–${lines.last + 1}` : ''}줄 선택 · Alt + ↑ / ↓로 이동` : resultDraft.current.text ? '이동할 줄을 선택하세요.' : '내용을 입력하세요.';
+    $('#change-nav').hidden = true;
+  } else $('#result-selection').textContent = '가운데 줄을 클릭하거나 ‘직접 편집’을 누르세요.';
+}
+function syncDraftSelection() {
+  if (!resultDraft || !editingResult) return;
+  const editor = $<HTMLTextAreaElement>('#result-editor');
+  resultDraft.select(editor.selectionStart, editor.selectionEnd);
+  updateDraftControls();
+}
+function displayDraft() {
+  if (!resultDraft) return;
+  const editor = $<HTMLTextAreaElement>('#result-editor');
+  editor.value = resultDraft.current.text;
+  editor.focus();
+  editor.setSelectionRange(resultDraft.current.start, resultDraft.current.end);
+  updateDraftControls();
+}
+function openResultEditor(line?: number) {
+  if (!resultDraft) return;
+  if (line !== undefined) {
+    const lines = resultDraft.current.text.split('\n');
+    const at = lines.slice(0, line - 1).reduce((sum, text) => sum + text.length + 1, 0);
+    resultDraft.select(at, at + (lines[line - 1]?.length ?? 0));
+  }
+  editingResult = true;
+  updateDraftControls();
+  for (const column of ['original', 'corrected']) for (const row of $(`#${column}-diff`).children) (row as HTMLElement).style.minHeight = '';
+  displayDraft();
+}
+function showDraftComparison() {
+  if (!resultDraft || !automaticResult) return;
+  try {
+    const next = resultDraft.hasManualChanges ? compareFinalResult(mergedSource, automaticResult, resultDraft.current, resultDraft.text) : automaticResult;
+    result = next;
+    editingResult = false;
+    renderMerge();
+    if (dirty) $('#merge-summary').textContent = '입력 변경됨 · 이전 자동 병합 기준과 최종본을 비교합니다.';
+  } catch (error) { notify(error instanceof Error ? error.message : '비교를 완료하지 못했습니다.', true); }
+}
+function moveDraft(direction: -1 | 1) {
+  if (!resultDraft || !editingResult || composingResult) return;
+  syncDraftSelection();
+  if (resultDraft.move(direction)) displayDraft();
+}
+function historyDraft(redo: boolean) {
+  if (!resultDraft || composingResult) return;
+  if (!(redo ? resultDraft.redo() : resultDraft.undo())) return;
+  if (editingResult) displayDraft(); else showDraftComparison();
+}
+function clearMergeResult() {
+  result = automaticResult = undefined;
+  resultDraft = undefined;
+  editingResult = dirty = false;
+  for (const column of ['original', 'result', 'corrected']) $(`#${column}-diff`).innerHTML = '';
+  $('#merge-empty').hidden = false;
+  $('#change-nav').hidden = true;
+  $('#merge-result-count').textContent = '병합 대기 중';
+  $('#merge-summary').textContent = '영어 원문은 그대로 보존됩니다';
+  $('#result-manual-status').textContent = '영어 + 교정한 한국어';
+  $('#result-manual-status').classList.remove('manual-status');
+  updateDraftControls();
+}
 function navigateChange(direction: number) {
   if (!result || dirty) return;
-  const changed = result.rows.map((row, index) => row.kind !== 'unchanged' ? index : -1).filter(index => index >= 0);
+  const changed = changedRows();
   if (!changed.length) return;
   selectedChange = (selectedChange + direction + changed.length) % changed.length;
   document.querySelectorAll('.selected-change').forEach(el => el.classList.remove('selected-change'));
@@ -213,6 +324,12 @@ function navigateChange(direction: number) {
 }
 
 const helpDialog = $<HTMLDialogElement>('#help-dialog');
+const replaceDialog = $<HTMLDialogElement>('#replace-result-dialog');
+replaceDialog.onclose = () => {
+  const action = pendingReplacement;
+  pendingReplacement = undefined;
+  if (replaceDialog.returnValue === 'replace') action?.();
+};
 $('#show-help').onclick = () => helpDialog.showModal();
 $('#close-help').onclick = () => helpDialog.close();
 helpDialog.onclick = event => {
@@ -236,7 +353,50 @@ for (const tab of ['extract', 'merge']) {
 $('#extract-button').onclick = runExtract;
 $('#merge-button').onclick = runMerge;
 $('#copy-extraction').onclick = () => { void copyText(extraction); };
-$('#copy-merge').onclick = () => { if (result && !dirty) void copyText(result.text); };
+$('#copy-merge').onclick = () => { if (resultDraft) void copyText(resultDraft.text); };
+$('#edit-result').onclick = () => {
+  if (editingResult) { syncDraftSelection(); showDraftComparison(); } else openResultEditor();
+};
+$('#move-result-up').onclick = () => moveDraft(-1);
+$('#move-result-down').onclick = () => moveDraft(1);
+$('#undo-result').onclick = () => historyDraft(false);
+$('#redo-result').onclick = () => historyDraft(true);
+for (const id of ['move-result-up', 'move-result-down', 'undo-result', 'redo-result']) {
+  $(`#${id}`).onmousedown = event => event.preventDefault();
+}
+$('#result-diff').onclick = event => {
+  const row = (event.target as Element).closest<HTMLElement>('[data-result-line]');
+  if (row) openResultEditor(Number(row.dataset.resultLine));
+};
+const resultEditor = $<HTMLTextAreaElement>('#result-editor');
+const commitResultInput = () => {
+  if (!resultDraft || composingResult) return;
+  resultDraft.edit(resultEditor.value, resultEditor.selectionStart, resultEditor.selectionEnd);
+  updateDraftControls();
+};
+resultEditor.onbeforeinput = event => {
+  if (composingResult || event.isComposing) return;
+  if (event.inputType === 'historyUndo' || event.inputType === 'historyRedo') {
+    event.preventDefault();
+    historyDraft(event.inputType === 'historyRedo');
+  } else syncDraftSelection();
+};
+resultEditor.oninput = commitResultInput;
+resultEditor.addEventListener('compositionstart', () => { composingResult = true; updateDraftControls(); });
+resultEditor.addEventListener('compositionend', () => { composingResult = false; commitResultInput(); });
+resultEditor.onselect = syncDraftSelection;
+resultEditor.onclick = syncDraftSelection;
+resultEditor.onkeyup = syncDraftSelection;
+resultEditor.onkeydown = event => {
+  if (composingResult || event.isComposing) return;
+  if (event.altKey && !event.ctrlKey && !event.metaKey && (event.key === 'ArrowUp' || event.key === 'ArrowDown')) {
+    event.preventDefault();
+    moveDraft(event.key === 'ArrowUp' ? -1 : 1);
+  } else if ((event.metaKey || event.ctrlKey) && (event.key.toLowerCase() === 'z' || event.key.toLowerCase() === 'y')) {
+    event.preventDefault();
+    historyDraft(event.shiftKey || event.key.toLowerCase() === 'y');
+  }
+};
 $('#clear-extract').onclick = () => {
   setValue('#extract-input', '');
   extraction = '';
@@ -250,13 +410,15 @@ $('#clear-extract').onclick = () => {
   $('#extract-input').focus();
 };
 $('#continue-merge').onclick = () => {
-  setValue('#merge-original', value('#extract-input'));
-  setValue('#merge-corrected', extraction);
-  setView(false);
-  invalidateMerge();
-  setMode('merge');
-  $('#merge-corrected').focus();
-  notify('오른쪽 한국어를 교정한 뒤 병합해 주세요.');
+  protectDraft(() => {
+    setValue('#merge-original', value('#extract-input'));
+    setValue('#merge-corrected', extraction);
+    clearMergeResult();
+    setView(false);
+    setMode('merge');
+    $('#merge-corrected').focus();
+    notify('오른쪽 한국어를 교정한 뒤 병합해 주세요.');
+  }, '추출본을 새로 가져오면 기존 병합 결과와 수동 보정 내용이 초기화됩니다. 계속할까요?');
 };
 $('#use-base').onclick = () => {
   const base = extractKorean(value('#merge-original'));
@@ -270,9 +432,12 @@ $('#use-base').onclick = () => {
 $('#load-sample').onclick = () => {
   if (mode === 'extract') { setValue('#extract-input', sample); runExtract(); }
   else {
-    setValue('#merge-original', sample);
-    setValue('#merge-corrected', reviseSample(extractKorean(sample).text));
-    runMerge();
+    protectDraft(() => {
+      setValue('#merge-original', sample);
+      setValue('#merge-corrected', reviseSample(extractKorean(sample).text));
+      executeMerge();
+      updateCounts();
+    }, '예제로 시작하면 입력과 수동 보정한 최종본이 예제 문서로 바뀝니다. 계속할까요?');
   }
   updateCounts();
 };
@@ -292,7 +457,7 @@ $('#next-change').onclick = () => navigateChange(1);
 let syncing = false;
 for (const side of ['original', 'result', 'corrected']) {
   $(`#${side}-diff`).onscroll = () => {
-    if (syncing || !mergeView) return;
+    if (syncing || !mergeView || editingResult) return;
     syncing = true;
     const top = $(`#${side}-diff`).scrollTop;
     for (const other of ['original', 'result', 'corrected']) if (other !== side) $(`#${other}-diff`).scrollTop = top;
@@ -300,7 +465,7 @@ for (const side of ['original', 'result', 'corrected']) {
   };
 }
 document.addEventListener('keydown', event => {
-  if (helpDialog.open) return;
+  if (helpDialog.open || replaceDialog.open || event.isComposing || composingResult) return;
   if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
     event.preventDefault();
     if (mode === 'extract') runExtract(); else runMerge();
