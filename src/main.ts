@@ -1,6 +1,7 @@
 import { diffWordsWithSpace } from 'diff';
 import { compareFinalResult, extractKorean, mergeKorean, type MergeResult, type MergeRow } from './merge';
 import { ResultDraft, selectedLines } from './draft';
+import { caretOffsetAtPoint, revealTextareaCaret } from './caret';
 import { sample, reviseSample } from './sample';
 import './style.css';
 
@@ -32,6 +33,7 @@ let mergedSource = '';
 let editingResult = false;
 let composingResult = false;
 let pendingReplacement: (() => void) | undefined;
+let restoringDraftSelection = false;
 
 $('#app').innerHTML = `
   <header class="topbar"><div class="brand"><span class="brand-symbol">${icon('merge')}</span><span>transmerge<span class="brand-dot">.</span></span></div><div class="header-note">${icon('shield')} 내 브라우저에서 안전하게</div><button id="show-help" class="header-link" type="button" aria-haspopup="dialog" aria-controls="help-dialog">사용 방법 ${icon('chevron')}</button></header>
@@ -49,10 +51,9 @@ $('#app').innerHTML = `
       <div id="merge-panel" role="tabpanel" aria-labelledby="tab-merge" hidden>
         <div class="taskbar"><div><h2>다듬은 문장을, 원래 자리로.</h2><p>원문과 교정본을 비교해 한국어 변경을 반영합니다.</p></div><div class="task-actions"><button id="use-base" class="button secondary">추출본 가져오기</button><button id="merge-button" class="button primary">${icon('merge')} 변경사항 병합 ${icon('arrow')}</button></div></div>
         <div class="merge-status"><div class="legend"><span><i class="legend-dot changed"></i>수정</span><span><i class="legend-dot added"></i>추가</span><span><i class="legend-dot deleted"></i>삭제</span></div><div id="change-nav" class="change-nav" hidden><button id="prev-change" class="small-button" aria-label="이전 변경">↑</button><span id="change-position"></span><button id="next-change" class="small-button" aria-label="다음 변경">↓</button></div><span id="merge-summary">영어 원문은 그대로 보존됩니다</span></div>
-        <div id="result-tools" class="result-tools" hidden><div class="result-tools-group"><span class="result-tools-label">가운데 결과 보정</span><button id="move-result-up" class="tool-button" aria-label="선택한 줄 위로 이동" title="선택한 줄 위로 이동 (Alt + ↑)" disabled>↑ 한 줄</button><button id="move-result-down" class="tool-button" aria-label="선택한 줄 아래로 이동" title="선택한 줄 아래로 이동 (Alt + ↓)" disabled>↓ 한 줄</button><span class="tools-divider"></span><button id="undo-result" class="tool-button" aria-label="결과 편집 실행 취소" title="실행 취소 (⌘ / Ctrl + Z)" disabled>↶ 취소</button><button id="redo-result" class="tool-button" aria-label="결과 편집 다시 실행" title="다시 실행 (⌘ / Ctrl + Shift + Z)" disabled>↷ 다시</button></div><span id="result-selection" class="result-selection">가운데 줄을 클릭하거나 ‘직접 편집’을 누르세요.</span></div>
         <div class="merge-grid">
           <section class="editor-card"><div class="card-header"><div class="card-title"><span class="panel-dot original-dot"></span><h3>영한 혼합 원문</h3></div><button id="edit-original" class="small-button" hidden>${icon('edit')} 편집</button></div><div class="editor-area merge-editor"><textarea id="merge-original" aria-label="병합할 영한 혼합 원문" spellcheck="false" placeholder="영어와 한국어가 섞인 원문을 붙여넣으세요."></textarea><div id="original-diff" class="diff-scroll" role="region" aria-label="원문 변경 비교" tabindex="0" hidden></div></div><div class="card-footer"><span id="merge-source-count">0줄</span><span>ORIGINAL</span></div></section>
-          <section class="editor-card result-card"><div class="card-header"><div class="card-title"><span class="panel-dot korean-dot"></span><h3>병합 결과</h3></div><div class="card-actions"><button id="edit-result" class="small-button blue-text" disabled>${icon('edit')} 직접 편집</button><button id="copy-merge" class="small-button" disabled>${icon('copy')} 전체 복사</button></div></div><div class="editor-area merge-editor"><textarea id="result-editor" aria-label="병합 결과 직접 편집" spellcheck="false" hidden></textarea><div id="result-diff" class="diff-scroll" role="region" aria-label="병합 결과 변경 비교" tabindex="0" hidden></div><div id="merge-empty" class="empty-state"><div class="empty-icon">${icon('merge')}</div><strong>두 문서가 만나는 곳</strong><p>왼쪽 원문과 오른쪽 교정본을 입력한 뒤<br />병합 버튼을 눌러 변경사항을 확인하세요.</p></div></div><div class="card-footer"><span id="merge-result-count">병합 대기 중</span><span id="result-manual-status" class="blue-text">영어 + 교정한 한국어</span></div></section>
+          <section class="editor-card result-card"><div class="card-header"><div class="card-title"><span class="panel-dot korean-dot"></span><h3>병합 결과</h3></div><div class="card-actions"><button id="edit-result" class="small-button blue-text" disabled>${icon('edit')} 직접 편집</button><button id="copy-merge" class="small-button" disabled>${icon('copy')} 전체 복사</button></div></div><div class="editor-area merge-editor"><div id="result-tools" class="result-tools" hidden><div class="result-tools-group"><span class="result-tools-label">결과 보정</span><button id="move-result-up" class="tool-button" aria-label="선택한 줄 위로 이동" title="선택한 줄 위로 이동 (Alt + ↑)" disabled>↑ 한 줄</button><button id="move-result-down" class="tool-button" aria-label="선택한 줄 아래로 이동" title="선택한 줄 아래로 이동 (Alt + ↓)" disabled>↓ 한 줄</button><span class="tools-divider"></span><button id="undo-result" class="tool-button" aria-label="결과 편집 실행 취소" title="실행 취소 (⌘ / Ctrl + Z)" disabled>↶ 취소</button><button id="redo-result" class="tool-button" aria-label="결과 편집 다시 실행" title="다시 실행 (⌘ / Ctrl + Shift + Z)" disabled>↷ 다시</button></div><span id="result-selection" class="result-selection">가운데 줄을 클릭하거나 ‘직접 편집’을 누르세요.</span></div><textarea id="result-editor" aria-label="병합 결과 직접 편집" spellcheck="false" hidden></textarea><div id="result-diff" class="diff-scroll" role="region" aria-label="병합 결과 변경 비교" tabindex="0" hidden></div><div id="merge-empty" class="empty-state"><div class="empty-icon">${icon('merge')}</div><strong>두 문서가 만나는 곳</strong><p>왼쪽 원문과 오른쪽 교정본을 입력한 뒤<br />병합 버튼을 눌러 변경사항을 확인하세요.</p></div></div><div class="card-footer"><span id="merge-result-count">병합 대기 중</span><span id="result-manual-status" class="blue-text">영어 + 교정한 한국어</span></div></section>
           <section class="editor-card"><div class="card-header"><div class="card-title"><span class="panel-dot corrected-dot"></span><h3>교정한 한국어</h3></div><button id="edit-corrected" class="small-button" hidden>${icon('edit')} 편집</button></div><div class="editor-area merge-editor"><textarea id="merge-corrected" aria-label="교정한 한국어 입력" spellcheck="false" placeholder="추출한 한국어를 교정한 뒤 붙여넣으세요.&#10;&#10;줄 추가와 삭제도 반영됩니다."></textarea><div id="corrected-diff" class="diff-scroll" role="region" aria-label="교정본 변경 비교" tabindex="0" hidden></div></div><div class="card-footer"><span id="merge-corrected-count">0줄</span><span>REVISED</span></div></section>
         </div>
         <div class="workspace-note">${icon('info')}<span>가운데 결과는 직접 편집할 수 있습니다. 선택한 줄은 Alt + ↑ / ↓로 이동하고, 비교 보기에서 수동 변경을 확인하세요. 삭제 표시 줄은 복사되지 않습니다.</span></div>
@@ -236,6 +237,8 @@ function updateDraftControls() {
   disable('#move-result-down', !editingResult || composingResult || !resultDraft?.canMove(1));
   $('#result-editor').hidden = !editingResult;
   $('#result-diff').hidden = editingResult || !result;
+  $('.merge-grid').classList.toggle('comparing-result', !!result && !editingResult);
+  syncResultToolbarHeight();
   $('#edit-result').innerHTML = editingResult ? `${icon('check')} 비교 보기` : `${icon('edit')} 직접 편집`;
   $('#merge-button').innerHTML = `${icon('merge')} ${resultDraft ? '자동 병합 다시 하기' : '변경사항 병합'} ${icon('arrow')}`;
   if (!resultDraft) return;
@@ -250,7 +253,7 @@ function updateDraftControls() {
   } else $('#result-selection').textContent = '가운데 줄을 클릭하거나 ‘직접 편집’을 누르세요.';
 }
 function syncDraftSelection() {
-  if (!resultDraft || !editingResult) return;
+  if (!resultDraft || !editingResult || restoringDraftSelection) return;
   const editor = $<HTMLTextAreaElement>('#result-editor');
   resultDraft.select(editor.selectionStart, editor.selectionEnd);
   updateDraftControls();
@@ -258,17 +261,30 @@ function syncDraftSelection() {
 function displayDraft() {
   if (!resultDraft) return;
   const editor = $<HTMLTextAreaElement>('#result-editor');
-  editor.value = resultDraft.current.text;
-  editor.focus();
-  editor.setSelectionRange(resultDraft.current.start, resultDraft.current.end);
+  // Capture before assigning .value/focusing: native selection events can fire
+  // during those operations and otherwise overwrite the intended caret.
+  const { text, start, end } = resultDraft.current;
+  restoringDraftSelection = true;
+  try {
+    if (editor.value !== text) editor.value = text;
+    editor.setSelectionRange(start, end);
+    editor.focus({ preventScroll: true });
+    editor.setSelectionRange(start, end);
+    revealTextareaCaret(editor, start);
+  } finally { restoringDraftSelection = false; }
   updateDraftControls();
+  requestAnimationFrame(() => {
+    // Do not interrupt typing or a subsequent selection while layout settles.
+    if (document.activeElement === editor && editor.value === text && editor.selectionStart === start && editor.selectionEnd === end) revealTextareaCaret(editor, start);
+  });
 }
-function openResultEditor(line?: number) {
+function openResultEditor(line?: number, column = 0) {
   if (!resultDraft) return;
   if (line !== undefined) {
     const lines = resultDraft.current.text.split('\n');
     const at = lines.slice(0, line - 1).reduce((sum, text) => sum + text.length + 1, 0);
-    resultDraft.select(at, at + (lines[line - 1]?.length ?? 0));
+    const caret = at + Math.max(0, Math.min(column, lines[line - 1]?.length ?? 0));
+    resultDraft.select(caret, caret);
   }
   editingResult = true;
   updateDraftControls();
@@ -366,7 +382,11 @@ for (const id of ['move-result-up', 'move-result-down', 'undo-result', 'redo-res
 }
 $('#result-diff').onclick = event => {
   const row = (event.target as Element).closest<HTMLElement>('[data-result-line]');
-  if (row) openResultEditor(Number(row.dataset.resultLine));
+  if (row) {
+    const content = row.querySelector<HTMLElement>('.line-content')!;
+    const column = caretOffsetAtPoint(content, event.clientX, event.clientY);
+    openResultEditor(Number(row.dataset.resultLine), column);
+  }
 };
 const resultEditor = $<HTMLTextAreaElement>('#result-editor');
 const commitResultInput = () => {
@@ -471,9 +491,24 @@ document.addEventListener('keydown', event => {
     if (mode === 'extract') runExtract(); else runMerge();
   }
 });
-window.addEventListener('resize', () => requestAnimationFrame(alignRowHeights));
+function refreshEditorLayout() {
+  syncResultToolbarHeight();
+  alignRowHeights();
+  if (editingResult && document.activeElement === resultEditor) revealTextareaCaret(resultEditor, resultEditor.selectionStart);
+}
+window.addEventListener('resize', () => requestAnimationFrame(refreshEditorLayout));
+function syncResultToolbarHeight() {
+  const height = $('#result-tools').getBoundingClientRect().height;
+  const grid = $('.merge-grid');
+  const value = `${height}px`;
+  if (grid.style.getPropertyValue('--result-tools-height') !== value) {
+    grid.style.setProperty('--result-tools-height', value);
+    requestAnimationFrame(alignRowHeights);
+  }
+}
+new ResizeObserver(syncResultToolbarHeight).observe($('#result-tools'));
 // Web fonts and panel resizing can reflow a line after the initial render.
-void document.fonts.ready.then(() => requestAnimationFrame(alignRowHeights));
+void document.fonts.ready.then(() => requestAnimationFrame(refreshEditorLayout));
 const panelWidths = new WeakMap<Element, number>();
 const panelObserver = new ResizeObserver(entries => {
   let resized = false;
