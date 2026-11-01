@@ -44,4 +44,39 @@ main>.workspace{margin-top:24px}
 .help-footer form{margin:0;flex-shrink:0}
 .help-footer kbd{font-family:inherit;font-size:9px;border:1px solid var(--line);padding:2px 4px;border-radius:3px}
 @media(max-width:760px){.help-dialog{padding:22px 18px}.help-heading p,.help-steps p{font-size:11px}.help-steps strong{font-size:12px}.help-footer{flex-wrap:wrap}.help-footer form{margin-left:auto}}
+/* Fill the viewport with document panels; scroll documents within each panel. */
+html,body{height:100%;overflow:hidden}
+#app{height:100vh;height:100dvh;display:flex;flex-direction:column;min-width:0}
+.topbar{height:52px;min-height:52px;padding:0 16px;gap:18px;flex-shrink:0}
+.brand{font-size:22px;gap:9px}.brand-symbol{width:30px;height:30px;border-radius:8px}.brand-symbol .icon{width:22px;height:22px}
+main{display:flex;flex-direction:column;flex:1;min-height:0;width:100%;max-width:none;margin:0;padding:8px 12px 12px}
+main>.workspace{margin-top:0;flex:1;min-height:0;display:flex;flex-direction:column;border-radius:10px}
+.workspace-toolbar{padding:6px 12px;gap:12px;flex-shrink:0;flex-wrap:wrap}
+.workspace-actions{display:flex;align-items:center;justify-content:flex-end;gap:14px;flex-wrap:wrap;margin-left:auto}
+.task-actions{gap:8px;flex-wrap:wrap}
+.tabs{padding:3px}.tab{padding:8px 12px}.button{padding:9px 12px}
+#extract-panel,#merge-panel{display:flex;flex-direction:column;flex:1;min-height:0;padding-top:10px}
+.extract-grid,.merge-grid{flex:1;min-height:0;grid-template-rows:minmax(0,1fr);padding:0 12px 12px;gap:10px}
+.extract-grid{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}
+.merge-grid{grid-template-columns:minmax(0,1fr) minmax(0,1.05fr) minmax(0,1fr)}
+.editor-card{display:flex;flex-direction:column;min-height:0}
+.card-header,.merge-grid .card-header,.result-card .card-header{height:40px;min-height:40px;flex-shrink:0;padding-top:0;padding-bottom:0}
+.editor-area,.merge-grid .editor-area,.output-card .editor-area{height:auto;flex:1;min-height:0;overflow:hidden}
+.card-footer,.merge-grid .card-footer{height:28px;min-height:28px;flex-shrink:0}
+.merge-status{margin:0 12px 8px;flex-shrink:0;min-height:20px}
+@media(max-width:1100px){.workspace-actions{gap:10px}.card-actions{gap:8px}.workspace-toolbar{gap:8px}}
+@media(max-width:760px){
+  html,body{height:auto;overflow:auto}
+  #app{height:auto;min-height:100vh;min-height:100dvh}
+  .topbar{padding:0 12px}.header-link{padding-left:0}
+  main{flex:1 0 auto;min-height:calc(100dvh - 52px);padding:6px}
+  main>.workspace{flex:1 0 auto}
+  .workspace-toolbar{padding:6px 8px;gap:6px}
+  .workspace-actions{gap:8px}.task-actions{gap:6px}.tab{padding:8px 10px}
+  #extract-panel,#merge-panel{flex:1 0 auto;padding-top:8px}
+  .extract-grid,.merge-grid{flex:none;grid-template-columns:minmax(0,1fr);grid-template-rows:none;grid-auto-rows:minmax(360px,65dvh);padding:0 8px 8px;gap:8px}
+  .editor-card{min-height:360px}
+  .card-header,.merge-grid .card-header,.result-card .card-header{height:40px;min-height:40px}
+  .merge-status{margin:0 8px 6px;gap:8px}
+}
 @media(prefers-reduced-motion:reduce){*{scroll-behavior:auto!important;transition:none!important}}
